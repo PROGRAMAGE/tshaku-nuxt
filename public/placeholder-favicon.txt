@@ -1,0 +1,1 @@
+Placeholder favicon for tshaku-nuxt. Replace this file with the real favicon.ico from the original project.
