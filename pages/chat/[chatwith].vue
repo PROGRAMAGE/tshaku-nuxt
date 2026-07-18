@@ -20,30 +20,6 @@
                         </div>
                         <button type="submit" class="close-btn-res p-3"><i class="ri-close-fill"></i></button>
                       </div>
-                      <div id="user-detail-popup" class="scroller">
-                        <div class="user-profile">
-                          <div class="user text-center mb-4">
-                            <a class="avatar m-0">
-                              <img :src="avatar" alt="avatar" style="width:100%;" />
-                            </a>
-                            <div class="user-name mt-4">
-                              <h4 class="text-center">{{ f_name }} {{ l_name }}</h4>
-                            </div>
-                            <div class="user-desc">
-                              <p class="text-center">(Me)</p>
-                            </div>
-                          </div>
-                          <hr />
-                          <div class="user-detail text-left mt-4 ps-4 pe-4">
-                            <h5 class="mt-4 mb-4">About</h5>
-                            <p>Profile page</p>
-                            <h5 class="mt-3 mb-3">Status</h5>
-                            <ul class="user-status p-0">
-                              <li class="mb-1"><i class="ri-checkbox-blank-circle-fill text-success pe-1"></i><span>Online</span></li>
-                            </ul>
-                          </div>
-                        </div>
-                      </div>
                       <div class="chat-searchbar mt-4">
                         <div class="form-group chat-search-data m-0">
                           <input type="text" class="form-control round" id="chat-search" placeholder="Search" />
@@ -55,7 +31,7 @@
                       <h5 class="mt-3">Tshats :)</h5>
                       <ul class="iq-chat-ui nav flex-column nav-pills">
                         <li v-for="conv in conversations" :key="conv.id" class="conversation-item" @click="goToChat(conv.otherUser.id)">
-                          <a :href="`/chats/${conv.otherUser.id}`">
+                          <a :href="`/chat/${conv.otherUser.id}`">
                             <div class="d-flex align-items-center">
                               <div class="avatar me-2">
                                 <img :src="conv.otherUser.avatar" :alt="conv.otherUser.name" class="avatar-50" />
@@ -78,23 +54,23 @@
                       <div class="chat-header d-flex justify-content-between align-items-center">
                         <div class="d-flex align-items-center">
                           <div class="avatar me-3">
-                            <img :src="activeConversationAvatar" alt="avatar" class="avatar-50" />
+                            <img :src="activeConversationAvatar || 'https://tshaku.com/view/socialV/assets/images/user/04.jpg'" alt="avatar" class="avatar-50" />
                           </div>
                           <div class="chat-user-detail">
-                            <h6 class="mb-0">{{ activeConversationName }}</h6>
+                            <h6 class="mb-0">{{ activeConversationName || 'Chat' }}</h6>
                             <p class="mb-0">Active now</p>
                           </div>
                         </div>
                       </div>
 
-                      <div class="chat-content">
-                        <!-- messages will render here after full migration -->
+                      <div class="chat-content" ref="messagesContainer">
                         <div v-for="m in messages" :key="m.id" class="message-item">{{ m.text }}</div>
                         <div ref="bottomMarker"></div>
                       </div>
 
-                      <div class="chat-footer">
+                      <div class="chat-footer d-flex gap-2 mt-3">
                         <input v-model="newMessage" class="form-control" placeholder="Write a message..." @keyup.enter="sendMessage" />
+                        <button class="btn btn-primary" @click="sendMessage">Send</button>
                       </div>
                     </div>
                   </div>
@@ -111,9 +87,9 @@
 </template>
 
 <script setup>
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import ContentHeader from '@/components/includes/ContentHeader.vue'
 import ContentFooter from '@/components/includes/ContentFooter.vue'
-import { ref } from 'vue'
 import { useMainStore } from '~/stores/main'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -122,24 +98,99 @@ const avatar = store.avatar
 const f_name = store.firstName
 const l_name = store.lastName
 
+const route = useRoute()
+const router = useRouter()
+const chatWith = route.params.chatwith
+
 const conversations = ref([])
 const messages = ref([])
-const router = useRouter()
+const newMessage = ref('')
+const messagesContainer = ref(null)
+let unsubscribe = null
+
+const activeConversationAvatar = ref('')
+const activeConversationName = ref('')
 
 function goToChat(id) { router.push(`/chat/${id}`) }
 
-const activeConversationAvatar = ''
-const activeConversationName = ''
-
-function sendMessage() {
-  if (!newMessage.value) return
-  messages.value.push({ id: Date.now(), text: newMessage.value })
-  newMessage.value = ''
+async function initFirebaseAndListen() {
+  // initialize firebase client-side and listen to messages if available
+  if (typeof window === 'undefined') return
+  try {
+    const init = (await import('/@/plugins/firebase.client.ts')).default
+    const fb = await init()
+    if (!fb || !fb.db) return
+    const { collection, query, where, orderBy, onSnapshot } = await import('firebase/firestore')
+    // messages collection structure assumed: documents with { participants: [uid1, uid2], createdAt, text, from }
+    const currentUserId = store.userId || null
+    if (!currentUserId) return
+    const q = query(collection(fb.db, 'messages'), where('participants', 'array-contains', currentUserId), orderBy('createdAt'))
+    unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs = []
+      snapshot.forEach((doc) => {
+        msgs.push({ id: doc.id, ...doc.data() })
+      })
+      // filter messages to conversation with chatWith
+      messages.value = msgs.filter(m => m.participants && m.participants.includes(String(chatWith)))
+      // update active conversation meta if available
+      if (messages.value.length) {
+        const last = messages.value[messages.value.length - 1]
+        activeConversationName.value = last.fromName || ''
+        activeConversationAvatar.value = last.fromAvatar || ''
+      }
+      // scroll to bottom
+      nextTickScroll()
+    })
+  } catch (e) {
+    console.warn('Firebase chat init failed', e)
+  }
 }
 
-const newMessage = ref('')
+function nextTickScroll() {
+  setTimeout(() => {
+    const el = messagesContainer.value
+    if (el) el.scrollTop = el.scrollHeight
+  }, 50)
+}
+
+async function sendMessage() {
+  if (!newMessage.value) return
+  // try to write to Firestore if available, else push locally
+  try {
+    const init = (await import('/@/plugins/firebase.client.ts')).default
+    const fb = await init()
+    if (fb && fb.db) {
+      const { collection, addDoc, serverTimestamp } = await import('firebase/firestore')
+      await addDoc(collection(fb.db, 'messages'), {
+        participants: [String(store.userId), String(chatWith)],
+        text: newMessage.value,
+        from: store.userId,
+        fromName: store.firstName,
+        fromAvatar: store.avatar,
+        createdAt: serverTimestamp()
+      })
+      newMessage.value = ''
+    } else {
+      messages.value.push({ id: Date.now(), text: newMessage.value, from: store.userId })
+      newMessage.value = ''
+      nextTickScroll()
+    }
+  } catch (e) {
+    console.error('sendMessage error', e)
+  }
+}
+
+onMounted(() => {
+  initFirebaseAndListen()
+})
+
+onBeforeUnmount(() => {
+  if (typeof unsubscribe === 'function') unsubscribe()
+})
 </script>
 
 <style scoped>
 .chat-page { min-height: 60vh }
+.chat-content { max-height: 60vh; overflow-y: auto; padding: 1rem }
+.message-item { padding: .5rem; border-radius: 6px; margin-bottom: .5rem; background: #f1f1f1 }
 </style>
