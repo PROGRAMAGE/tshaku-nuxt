@@ -9,8 +9,9 @@
     "start": "nuxi preview"
   },
   "dependencies": {
-    "nuxt": "^3.8.0",
+    "@pinia/nuxt": "^1.0.1",
     "axios": "^1.4.0",
-    "pinia": "^2.0.33"
+    "nuxt": "^3.21.8",
+    "pinia": "^4.0.2"
   }
 }
